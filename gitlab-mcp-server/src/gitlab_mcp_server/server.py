@@ -209,6 +209,30 @@ async def get_repository_tree(
         return _fmt_error(e)
 
 
+@mcp.tool()
+async def create_branch(
+    project_id: str,
+    branch: str,
+    ref: str,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Create a new branch in a GitLab repository.
+
+    Args:
+        project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
+        branch: Name of the new branch to create.
+        ref: Source branch name, tag, or commit SHA to create the branch from.
+
+    Returns:
+        JSON object representing the created branch.
+    """
+    try:
+        result = await _get_client(ctx).create_branch(project_id, branch, ref)
+        return json.dumps(result, indent=2)
+    except GitLabError as e:
+        return _fmt_error(e)
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 

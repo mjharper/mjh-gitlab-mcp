@@ -140,5 +140,14 @@ class GitLabClient:
             params=params,
         )
 
+    async def create_branch(
+        self, project_id: str, branch: str, ref: str
+    ) -> Any:
+        return await self._request(
+            "POST",
+            f"/projects/{project_id}/repository/branches",
+            json={"branch": branch, "ref": ref},
+        )
+
     async def aclose(self) -> None:
         await self._client.aclose()

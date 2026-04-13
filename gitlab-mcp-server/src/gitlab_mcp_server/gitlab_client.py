@@ -1,8 +1,27 @@
 import base64
 import os
+import re
 from typing import Any
 
 import httpx
+
+_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
+
+
+def _parse_semver(tag: str) -> tuple[int, int, int] | None:
+    m = _SEMVER_RE.match(tag)
+    if m:
+        return (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    return None
+
+
+def _next_link(link_header: str) -> str | None:
+    """Extract the URL from a Link header's rel="next" entry, if present."""
+    for part in link_header.split(","):
+        part = part.strip()
+        if 'rel="next"' in part:
+            return part.split(";")[0].strip().strip("<>")
+    return None
 
 
 class GitLabError(Exception):
@@ -148,6 +167,38 @@ class GitLabClient:
             f"/projects/{project_id}/repository/branches",
             json={"branch": branch, "ref": ref},
         )
+
+    async def _get_all_pages(self, path: str, params: dict[str, Any]) -> list[Any]:
+        """Fetch all pages of a GET endpoint, following Link: next headers."""
+        response = await self._client.get(path, params={**params, "per_page": 100})
+        if not response.is_success:
+            raise GitLabError(response.status_code, response.text)
+        results: list[Any] = response.json()
+        while next_url := _next_link(response.headers.get("link", "")):
+            response = await self._client.get(next_url)
+            if not response.is_success:
+                raise GitLabError(response.status_code, response.text)
+            results.extend(response.json())
+        return results
+
+    async def get_latest_release(
+        self, project_id: str, major_version: int | None = None
+    ) -> dict[str, Any] | None:
+        releases = await self._get_all_pages(
+            f"/projects/{project_id}/releases", params={}
+        )
+        candidates: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
+        for release in releases:
+            version = _parse_semver(release.get("tag_name", ""))
+            if version is None:
+                continue
+            if major_version is not None and version[0] != major_version:
+                continue
+            candidates.append((version, release))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -210,6 +210,35 @@ async def get_repository_tree(
 
 
 @mcp.tool()
+async def get_latest_release(
+    project_id: str,
+    major_version: int | None = None,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Get the latest release for a GitLab project, ranked by semantic version.
+
+    Fetches all releases and returns the one with the highest semver tag. Tags that
+    cannot be parsed as semver (X.Y.Z or vX.Y.Z) are ignored.
+
+    Args:
+        project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
+        major_version: If provided, only consider releases whose major version matches
+            this value (e.g. 2 returns the latest 2.x.x release).
+
+    Returns:
+        JSON object for the latest matching release, or an error message if none found.
+    """
+    try:
+        result = await _get_client(ctx).get_latest_release(project_id, major_version)
+        if result is None:
+            scope = f"major version {major_version}" if major_version is not None else "any version"
+            return f"No releases with a valid semver tag found for {scope}."
+        return json.dumps(result, indent=2)
+    except GitLabError as e:
+        return _fmt_error(e)
+
+
+@mcp.tool()
 async def create_branch(
     project_id: str,
     branch: str,

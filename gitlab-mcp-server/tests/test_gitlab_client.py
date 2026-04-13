@@ -5,7 +5,7 @@ import httpx
 import pytest
 import respx
 
-from gitlab_mcp_server.gitlab_client import GitLabClient, GitLabError
+from gitlab_mcp_server.gitlab_client import GitLabClient, GitLabError, _parse_semver, _next_link
 
 BASE_URL = "https://gitlab.example.com/api/v4"
 
@@ -317,3 +317,131 @@ async def test_create_branch_from_sha(client):
     import json
     payload = json.loads(route.calls[0].request.read())
     assert payload["ref"] == "abc123def456"
+
+
+# ---------------------------------------------------------------------------
+# _parse_semver (unit tests — no HTTP needed)
+# ---------------------------------------------------------------------------
+
+def test_parse_semver_plain():
+    assert _parse_semver("1.2.3") == (1, 2, 3)
+
+def test_parse_semver_v_prefix():
+    assert _parse_semver("v2.10.0") == (2, 10, 0)
+
+def test_parse_semver_with_prerelease_suffix():
+    # Pre-release suffix is ignored; only X.Y.Z is extracted
+    assert _parse_semver("v1.2.3-beta.1") == (1, 2, 3)
+
+def test_parse_semver_non_semver():
+    assert _parse_semver("release-2024") is None
+    assert _parse_semver("") is None
+    assert _parse_semver("1.2") is None
+
+
+# ---------------------------------------------------------------------------
+# _next_link (unit tests — no HTTP needed)
+# ---------------------------------------------------------------------------
+
+def test_next_link_present():
+    header = '<https://gitlab.example.com/api/v4/projects/1/releases?page=2>; rel="next", <https://gitlab.example.com/api/v4/projects/1/releases?page=1>; rel="first"'
+    assert _next_link(header) == "https://gitlab.example.com/api/v4/projects/1/releases?page=2"
+
+def test_next_link_absent():
+    header = '<https://gitlab.example.com/api/v4/projects/1/releases?page=1>; rel="first"'
+    assert _next_link(header) is None
+
+def test_next_link_empty():
+    assert _next_link("") is None
+
+
+# ---------------------------------------------------------------------------
+# get_latest_release
+# ---------------------------------------------------------------------------
+
+def _release(tag: str) -> dict:
+    return {"tag_name": tag, "name": f"Release {tag}"}
+
+
+@respx.mock
+async def test_get_latest_release_returns_highest_semver(client):
+    respx.get(_url("/projects/1/releases")).mock(
+        return_value=httpx.Response(200, json=[
+            _release("v1.0.0"),
+            _release("v1.2.0"),
+            _release("v1.1.3"),
+        ])
+    )
+    result = await client.get_latest_release("1")
+    assert result["tag_name"] == "v1.2.0"
+
+
+@respx.mock
+async def test_get_latest_release_filters_by_major(client):
+    respx.get(_url("/projects/1/releases")).mock(
+        return_value=httpx.Response(200, json=[
+            _release("v2.5.0"),
+            _release("v1.9.9"),
+            _release("v2.0.1"),
+        ])
+    )
+    result = await client.get_latest_release("1", major_version=1)
+    assert result["tag_name"] == "v1.9.9"
+
+
+@respx.mock
+async def test_get_latest_release_skips_non_semver(client):
+    respx.get(_url("/projects/1/releases")).mock(
+        return_value=httpx.Response(200, json=[
+            _release("nightly-build"),
+            _release("v0.9.0"),
+            _release("release-latest"),
+        ])
+    )
+    result = await client.get_latest_release("1")
+    assert result["tag_name"] == "v0.9.0"
+
+
+@respx.mock
+async def test_get_latest_release_returns_none_when_no_match(client):
+    respx.get(_url("/projects/1/releases")).mock(
+        return_value=httpx.Response(200, json=[
+            _release("v1.0.0"),
+            _release("v1.5.0"),
+        ])
+    )
+    result = await client.get_latest_release("1", major_version=3)
+    assert result is None
+
+
+@respx.mock
+async def test_get_latest_release_returns_none_when_no_semver_tags(client):
+    respx.get(_url("/projects/1/releases")).mock(
+        return_value=httpx.Response(200, json=[
+            _release("nightly"),
+            _release("experimental"),
+        ])
+    )
+    result = await client.get_latest_release("1")
+    assert result is None
+
+
+@respx.mock
+async def test_get_latest_release_follows_pagination(client):
+    releases_url = _url("/projects/1/releases")
+    page2_url = releases_url + "?page=2&per_page=100"
+
+    # Use a side_effect iterator so the same route returns different responses
+    # on successive calls (first call returns page 1 with a Link: next header,
+    # second call returns page 2 with no Link header).
+    pages = iter([
+        httpx.Response(
+            200,
+            json=[_release("v1.0.0"), _release("v1.1.0")],
+            headers={"link": f'<{page2_url}>; rel="next"'},
+        ),
+        httpx.Response(200, json=[_release("v1.3.0"), _release("v1.2.0")]),
+    ])
+    respx.get(releases_url).mock(side_effect=lambda _req: next(pages))
+    result = await client.get_latest_release("1")
+    assert result["tag_name"] == "v1.3.0"

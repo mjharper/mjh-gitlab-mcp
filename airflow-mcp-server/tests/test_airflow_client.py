@@ -18,7 +18,10 @@ def airflow_env(monkeypatch):
 
 @pytest.fixture
 def client():
-    return AirflowClient()
+    c = AirflowClient()
+    # Pre-seed the Bearer token so individual tests don't need to mock /auth/token.
+    c._client.headers["Authorization"] = "Bearer test-jwt-token"
+    return c
 
 
 def _url(path: str) -> str:
@@ -26,19 +29,48 @@ def _url(path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Authentication
+# authenticate()
 # ---------------------------------------------------------------------------
 
 @respx.mock
-async def test_basic_auth_header_sent(client):
-    import base64
+async def test_authenticate_posts_credentials_and_stores_token():
+    route = respx.post(_url("/auth/token")).mock(
+        return_value=httpx.Response(200, json={"access_token": "my-jwt", "token_type": "bearer"})
+    )
+    c = AirflowClient()
+    await c.authenticate()
+    await c.aclose()
+
+    body = route.calls[0].request.read()
+    import json
+    payload = json.loads(body)
+    assert payload == {"username": "admin", "password": "secret"}
+    assert c._client.headers["Authorization"] == "Bearer my-jwt"
+
+
+@respx.mock
+async def test_authenticate_raises_on_401():
+    respx.post(_url("/auth/token")).mock(
+        return_value=httpx.Response(401, json={"detail": "Unauthorized"})
+    )
+    c = AirflowClient()
+    with pytest.raises(AirflowError) as exc_info:
+        await c.authenticate()
+    await c.aclose()
+    assert exc_info.value.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Bearer token forwarded on API requests
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_bearer_token_header_sent(client):
     route = respx.get(_url("/dags")).mock(
         return_value=httpx.Response(200, json={"dags": [], "total_entries": 0})
     )
     await client.list_dags()
-    auth_header = route.calls[0].request.headers["authorization"]
-    expected = "Basic " + base64.b64encode(b"admin:secret").decode()
-    assert auth_header == expected
+    assert route.calls[0].request.headers["authorization"] == "Bearer test-jwt-token"
 
 
 # ---------------------------------------------------------------------------

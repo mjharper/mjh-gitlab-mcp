@@ -13,22 +13,31 @@ class AirflowError(Exception):
 class AirflowClient:
     def __init__(self) -> None:
         base_url = os.environ.get("AIRFLOW_API_URL", "").rstrip("/")
-        username = os.environ.get("AIRFLOW_USERNAME", "")
-        password = os.environ.get("AIRFLOW_PASSWORD", "")
+        self._username = os.environ.get("AIRFLOW_USERNAME", "")
+        self._password = os.environ.get("AIRFLOW_PASSWORD", "")
 
         if not base_url:
             raise RuntimeError("AIRFLOW_API_URL environment variable is not set")
-        if not username:
+        if not self._username:
             raise RuntimeError("AIRFLOW_USERNAME environment variable is not set")
-        if not password:
+        if not self._password:
             raise RuntimeError("AIRFLOW_PASSWORD environment variable is not set")
 
         self._client = httpx.AsyncClient(
             base_url=base_url,
-            auth=(username, password),
-            headers={"Content-Type": "application/json"},
             timeout=30.0,
         )
+
+    async def authenticate(self) -> None:
+        """Obtain a JWT from /auth/token and store it as a Bearer header."""
+        response = await self._client.post(
+            "/auth/token",
+            json={"username": self._username, "password": self._password},
+        )
+        if not response.is_success:
+            raise AirflowError(response.status_code, response.text)
+        token = response.json()["access_token"]
+        self._client.headers["Authorization"] = f"Bearer {token}"
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._client.request(method, path, **kwargs)

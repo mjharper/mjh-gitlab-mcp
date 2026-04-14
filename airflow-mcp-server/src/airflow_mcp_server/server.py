@@ -10,6 +10,7 @@ from .airflow_client import AirflowClient, AirflowError
 @asynccontextmanager
 async def lifespan(server: FastMCP) -> AsyncIterator[dict[str, Any]]:
     client = AirflowClient()
+    await client.authenticate()
     try:
         yield {"client": client}
     finally:

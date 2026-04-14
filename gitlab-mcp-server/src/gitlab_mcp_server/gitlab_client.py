@@ -133,11 +133,22 @@ class GitLabClient:
             json=payload,
         )
 
-    async def create_pipeline(self, project_id: str, ref: str) -> Any:
+    async def create_pipeline(
+        self,
+        project_id: str,
+        ref: str,
+        variables: list[dict[str, str]] | None = None,
+        inputs: dict[str, Any] | None = None,
+    ) -> Any:
+        payload: dict[str, Any] = {"ref": ref}
+        if variables is not None:
+            payload["variables"] = variables
+        if inputs is not None:
+            payload["inputs"] = inputs
         return await self._request(
             "POST",
             f"/projects/{project_id}/pipeline",
-            json={"ref": ref},
+            json=payload,
         )
 
     async def get_repository_tree(

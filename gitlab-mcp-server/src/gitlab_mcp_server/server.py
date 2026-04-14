@@ -163,6 +163,8 @@ async def create_merge_request(
 async def create_pipeline(
     project_id: str,
     ref: str,
+    variables: list[dict[str, str]] | None = None,
+    inputs: dict[str, Any] | None = None,
     ctx: Context = None,  # type: ignore[assignment]
 ) -> str:
     """Trigger a new CI/CD pipeline for a branch or tag.
@@ -170,12 +172,20 @@ async def create_pipeline(
     Args:
         project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
         ref: Branch name or tag to run the pipeline on.
+        variables: Optional list of pipeline variables. Each entry must be a dict
+            with keys 'key', 'value', and optionally 'variable_type' ('env_var'
+            or 'file'). Example: [{"key": "MY_VAR", "value": "hello"}]
+        inputs: Optional dict of pipeline inputs (for pipelines that declare
+            spec.inputs). Keys are input names, values are the input values.
+            Example: {"environment": "staging", "deploy": true}
 
     Returns:
         JSON object representing the created pipeline, including its ID and status.
     """
     try:
-        result = await _get_client(ctx).create_pipeline(project_id, ref)
+        result = await _get_client(ctx).create_pipeline(
+            project_id, ref, variables=variables, inputs=inputs
+        )
         return json.dumps(result, indent=2)
     except GitLabError as e:
         return _fmt_error(e)

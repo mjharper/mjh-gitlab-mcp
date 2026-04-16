@@ -32,7 +32,7 @@ async def send_message(channel: str, text: str, ctx: Context = None) -> str:  # 
     """Send a plain text message to a Slack channel or user.
 
     Args:
-        channel: Slack channel ID (e.g. C1234567890) or user ID for DMs (e.g. U1234567890).
+        channel: Slack channel ID (e.g. C1234567890), channel name (e.g. general), or user ID for DMs.
         text: The message text to send.
     """
     try:
@@ -52,7 +52,7 @@ async def send_formatted_message(
     """Send a Block Kit formatted message to a Slack channel or user.
 
     Args:
-        channel: Slack channel ID (e.g. C1234567890) or user ID for DMs (e.g. U1234567890).
+        channel: Slack channel ID (e.g. C1234567890), channel name (e.g. general), or user ID for DMs.
         blocks: List of Slack Block Kit block objects.
         text: Fallback text shown in notifications and accessibility contexts.
     """

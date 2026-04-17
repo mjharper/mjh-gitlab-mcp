@@ -70,5 +70,21 @@ class AirflowClient:
         runs: list[Any] = data.get("dag_runs", [])
         return runs[0] if runs else None
 
+    async def get_failed_task_instances(self, dag_id: str, dag_run_id: str) -> list[Any]:
+        data = await self._request(
+            "GET",
+            f"/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances",
+            params={"state": "failed"},
+        )
+        return data.get("task_instances", [])
+
+    async def get_task_logs(self, dag_id: str, dag_run_id: str, task_id: str, try_number: int) -> str:
+        response = await self._client.get(
+            f"/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances/{task_id}/logs/{try_number}"
+        )
+        if not response.is_success:
+            raise AirflowError(response.status_code, response.text)
+        return response.text
+
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -100,6 +100,72 @@ async def get_last_dag_run(
         return _fmt_error(e)
 
 
+@mcp.tool()
+async def get_dag_run_errors(
+    dag_id: str,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Get error details for the most recent failed run of an Airflow DAG.
+
+    Fetches the last DAG run, finds all failed task instances, and retrieves
+    their logs so you can see what caused the failure.
+
+    Args:
+        dag_id: The DAG ID to inspect.
+
+    Returns:
+        JSON object with dag_run_id, state, and a failed_tasks array. Each
+        failed task includes task_id, try_number, start_date, end_date, and
+        logs. Returns a message if the DAG has no runs or the last run did
+        not fail.
+    """
+    client = _get_client(ctx)
+    try:
+        run = await client.get_last_dag_run(dag_id)
+        if run is None:
+            return f"No runs found for DAG: {dag_id!r}"
+        if run["state"] != "failed":
+            return json.dumps(
+                {"dag_run_id": run["dag_run_id"], "state": run["state"], "message": "Last run did not fail"},
+                indent=2,
+            )
+
+        dag_run_id = run["dag_run_id"]
+        failed_tasks = await client.get_failed_task_instances(dag_id, dag_run_id)
+
+        tasks_with_logs = []
+        for task in failed_tasks:
+            task_id = task["task_id"]
+            try_number = task.get("try_number", 1)
+            try:
+                logs = await client.get_task_logs(dag_id, dag_run_id, task_id, try_number)
+            except AirflowError as e:
+                logs = f"Could not retrieve logs: {e}"
+            tasks_with_logs.append(
+                {
+                    "task_id": task_id,
+                    "try_number": try_number,
+                    "start_date": task.get("start_date"),
+                    "end_date": task.get("end_date"),
+                    "logs": logs,
+                }
+            )
+
+        return json.dumps(
+            {
+                "dag_run_id": dag_run_id,
+                "dag_id": dag_id,
+                "state": run["state"],
+                "start_date": run.get("start_date"),
+                "end_date": run.get("end_date"),
+                "failed_tasks": tasks_with_logs,
+            },
+            indent=2,
+        )
+    except AirflowError as e:
+        return _fmt_error(e)
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 

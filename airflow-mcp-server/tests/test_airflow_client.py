@@ -234,6 +234,72 @@ async def test_get_last_dag_run_raises_on_404(client):
 
 
 # ---------------------------------------------------------------------------
+# get_failed_task_instances
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_failed_task_instances_returns_failed_tasks(client):
+    task_instance = {
+        "task_id": "my_task",
+        "dag_id": "my_dag",
+        "dag_run_id": "run_1",
+        "state": "failed",
+        "try_number": 1,
+        "start_date": "2024-01-02T00:00:05+00:00",
+        "end_date": "2024-01-02T00:00:10+00:00",
+    }
+    route = respx.get(_url("/dags/my_dag/dagRuns/run_1/taskInstances")).mock(
+        return_value=httpx.Response(200, json={"task_instances": [task_instance], "total_entries": 1})
+    )
+    result = await client.get_failed_task_instances("my_dag", "run_1")
+    assert result == [task_instance]
+    assert route.calls[0].request.url.params["state"] == "failed"
+
+
+@respx.mock
+async def test_get_failed_task_instances_returns_empty_when_none(client):
+    respx.get(_url("/dags/my_dag/dagRuns/run_1/taskInstances")).mock(
+        return_value=httpx.Response(200, json={"task_instances": [], "total_entries": 0})
+    )
+    result = await client.get_failed_task_instances("my_dag", "run_1")
+    assert result == []
+
+
+@respx.mock
+async def test_get_failed_task_instances_raises_on_404(client):
+    respx.get(_url("/dags/missing/dagRuns/run_1/taskInstances")).mock(
+        return_value=httpx.Response(404, json={"title": "DAG not found"})
+    )
+    with pytest.raises(AirflowError) as exc_info:
+        await client.get_failed_task_instances("missing", "run_1")
+    assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# get_task_logs
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_task_logs_returns_log_text(client):
+    log_text = "*** Found local files:\n*** /opt/airflow/logs/my_task/attempt=1.log\n[2024-01-02 00:00:09] ERROR - Task failed with exception\nTraceback (most recent call last):\n  File \"dag.py\", line 10, in execute\n    raise ValueError('something went wrong')\nValueError: something went wrong\n"
+    respx.get(_url("/dags/my_dag/dagRuns/run_1/taskInstances/my_task/logs/1")).mock(
+        return_value=httpx.Response(200, text=log_text)
+    )
+    result = await client.get_task_logs("my_dag", "run_1", "my_task", 1)
+    assert result == log_text
+
+
+@respx.mock
+async def test_get_task_logs_raises_on_error(client):
+    respx.get(_url("/dags/my_dag/dagRuns/run_1/taskInstances/my_task/logs/1")).mock(
+        return_value=httpx.Response(404, text="Not found")
+    )
+    with pytest.raises(AirflowError) as exc_info:
+        await client.get_task_logs("my_dag", "run_1", "my_task", 1)
+    assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
 # Missing env vars
 # ---------------------------------------------------------------------------
 

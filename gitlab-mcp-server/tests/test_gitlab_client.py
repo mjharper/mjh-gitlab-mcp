@@ -556,3 +556,141 @@ async def test_get_latest_release_follows_pagination(client):
     respx.get(releases_url).mock(side_effect=lambda _req: next(pages))
     result = await client.get_latest_release("1")
     assert result["tag_name"] == "v1.3.0"
+
+
+# ---------------------------------------------------------------------------
+# get_merge_request
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_merge_request_url_and_result(client):
+    route = respx.get(_url("/projects/1/merge_requests/5")).mock(
+        return_value=httpx.Response(200, json={"iid": 5, "title": "My MR", "state": "opened"})
+    )
+    result = await client.get_merge_request("1", 5)
+    assert route.called
+    assert result["iid"] == 5
+    assert result["title"] == "My MR"
+    assert result["state"] == "opened"
+
+
+@respx.mock
+async def test_get_merge_request_404_raises(client):
+    respx.get(_url("/projects/1/merge_requests/99")).mock(
+        return_value=httpx.Response(404, json={"message": "Not found"})
+    )
+    with pytest.raises(GitLabError) as exc_info:
+        await client.get_merge_request("1", 99)
+    assert exc_info.value.status_code == 404
+
+
+@respx.mock
+async def test_get_merge_request_encoded_project_id(client):
+    route = respx.get(_url("/projects/group%2Fproject/merge_requests/5")).mock(
+        return_value=httpx.Response(200, json={"iid": 5})
+    )
+    await client.get_merge_request("group%2Fproject", 5)
+    assert route.called
+
+
+# ---------------------------------------------------------------------------
+# get_merge_request_diffs
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_merge_request_diffs_single_page(client):
+    diffs = [
+        {"old_path": "a.py", "new_path": "a.py", "diff": "@@ -1 +1 @@\n-old\n+new", "new_file": False, "deleted_file": False, "renamed_file": False},
+        {"old_path": "b.py", "new_path": "b.py", "diff": "@@ -1 +1 @@\n-x\n+y", "new_file": False, "deleted_file": False, "renamed_file": False},
+    ]
+    route = respx.get(_url("/projects/1/merge_requests/5/diffs")).mock(
+        return_value=httpx.Response(200, json=diffs)
+    )
+    result = await client.get_merge_request_diffs("1", 5)
+    assert route.calls[0].request.url.params["per_page"] == "100"
+    assert len(result) == 2
+    assert result[0]["old_path"] == "a.py"
+
+
+@respx.mock
+async def test_get_merge_request_diffs_follows_pagination(client):
+    diffs_url = _url("/projects/1/merge_requests/5/diffs")
+    page2_url = diffs_url + "?page=2&per_page=100"
+
+    diff1 = {"old_path": "a.py", "new_path": "a.py", "diff": "@@ -1 +1 @@\n-old\n+new", "new_file": False, "deleted_file": False, "renamed_file": False}
+    diff2 = {"old_path": "b.py", "new_path": "b.py", "diff": "@@ -1 +1 @@\n-x\n+y", "new_file": False, "deleted_file": False, "renamed_file": False}
+
+    pages = iter([
+        httpx.Response(200, json=[diff1], headers={"link": f'<{page2_url}>; rel="next"'}),
+        httpx.Response(200, json=[diff2]),
+    ])
+    respx.get(diffs_url).mock(side_effect=lambda _req: next(pages))
+    result = await client.get_merge_request_diffs("1", 5)
+    assert len(result) == 2
+    assert result[0]["old_path"] == "a.py"
+    assert result[1]["old_path"] == "b.py"
+
+
+@respx.mock
+async def test_get_merge_request_diffs_404_raises(client):
+    respx.get(_url("/projects/1/merge_requests/99/diffs")).mock(
+        return_value=httpx.Response(404, json={"message": "Not found"})
+    )
+    with pytest.raises(GitLabError) as exc_info:
+        await client.get_merge_request_diffs("1", 99)
+    assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# list_merge_requests
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_list_merge_requests_default_params(client):
+    route = respx.get(_url("/projects/1/merge_requests")).mock(
+        return_value=httpx.Response(200, json=[{"iid": 1}, {"iid": 2}])
+    )
+    result = await client.list_merge_requests("1")
+    params = route.calls[0].request.url.params
+    assert params["state"] == "opened"
+    assert params["per_page"] == "20"
+    assert result == [{"iid": 1}, {"iid": 2}]
+
+
+@respx.mock
+async def test_list_merge_requests_custom_state_and_per_page(client):
+    route = respx.get(_url("/projects/1/merge_requests")).mock(
+        return_value=httpx.Response(200, json=[{"iid": 10}])
+    )
+    await client.list_merge_requests("1", state="merged", per_page=5)
+    params = route.calls[0].request.url.params
+    assert params["state"] == "merged"
+    assert params["per_page"] == "5"
+
+
+@respx.mock
+async def test_list_merge_requests_state_all(client):
+    route = respx.get(_url("/projects/1/merge_requests")).mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    await client.list_merge_requests("1", state="all")
+    assert route.calls[0].request.url.params["state"] == "all"
+
+
+@respx.mock
+async def test_list_merge_requests_encoded_project_id(client):
+    route = respx.get(_url("/projects/mygroup%2Fmyrepo/merge_requests")).mock(
+        return_value=httpx.Response(200, json=[])
+    )
+    await client.list_merge_requests("mygroup%2Fmyrepo")
+    assert route.called
+
+
+@respx.mock
+async def test_list_merge_requests_404_raises(client):
+    respx.get(_url("/projects/1/merge_requests")).mock(
+        return_value=httpx.Response(404, json={"message": "Not found"})
+    )
+    with pytest.raises(GitLabError) as exc_info:
+        await client.list_merge_requests("1")
+    assert exc_info.value.status_code == 404

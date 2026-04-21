@@ -264,5 +264,29 @@ class GitLabClient:
         candidates.sort(key=lambda x: x[0], reverse=True)
         return candidates[0][1]
 
+    async def get_merge_request(self, project_id: str, mr_iid: int) -> Any:
+        return await self._request(
+            "GET",
+            f"/projects/{project_id}/merge_requests/{mr_iid}",
+        )
+
+    async def get_merge_request_diffs(self, project_id: str, mr_iid: int) -> list[Any]:
+        return await self._get_all_pages(
+            f"/projects/{project_id}/merge_requests/{mr_iid}/diffs",
+            params={},
+        )
+
+    async def list_merge_requests(
+        self,
+        project_id: str,
+        state: str = "opened",
+        per_page: int = 20,
+    ) -> Any:
+        return await self._request(
+            "GET",
+            f"/projects/{project_id}/merge_requests",
+            params={"state": state, "per_page": per_page},
+        )
+
     async def aclose(self) -> None:
         await self._client.aclose()

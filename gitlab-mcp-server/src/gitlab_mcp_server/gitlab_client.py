@@ -1,6 +1,8 @@
+import asyncio
 import base64
 import os
 import re
+import time
 from typing import Any
 
 import httpx
@@ -231,6 +233,38 @@ class GitLabClient:
                 + text[-max_chars:]
             )
         return text
+
+    async def await_pipeline(
+        self,
+        project_id: str,
+        pipeline_id: int,
+        poll_interval: float = 10.0,
+        timeout: float = 600.0,
+    ) -> Any:
+        _TERMINAL = {"success", "failed", "canceled", "skipped"}
+        deadline = time.monotonic() + timeout
+        while True:
+            pipeline = await self.get_pipeline(project_id, pipeline_id)
+            if pipeline["status"] in _TERMINAL:
+                return pipeline
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                pipeline["timed_out"] = True
+                return pipeline
+            await asyncio.sleep(min(poll_interval, remaining))
+
+    async def get_failed_job_logs(
+        self,
+        project_id: str,
+        pipeline_id: int,
+        max_chars: int = 50000,
+    ) -> dict[str, str]:
+        jobs = await self.list_pipeline_jobs(project_id, pipeline_id)
+        failed = [j for j in jobs if j["status"] == "failed"]
+        return {
+            job["name"]: await self.get_job_log(project_id, job["id"], max_chars)
+            for job in failed
+        }
 
     async def _get_all_pages(self, path: str, params: dict[str, Any]) -> list[Any]:
         """Fetch all pages of a GET endpoint, following Link: next headers."""

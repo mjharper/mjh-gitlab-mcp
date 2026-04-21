@@ -540,6 +540,68 @@ async def get_mr_discussions(
         return _fmt_error(e)
 
 
+@mcp.tool()
+async def await_pipeline(
+    project_id: str,
+    pipeline_id: int,
+    poll_interval: float = 10.0,
+    timeout: float = 600.0,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Wait for a pipeline to reach a terminal state, polling until it completes.
+
+    Blocks until the pipeline status is success, failed, canceled, or skipped.
+    If the timeout is reached before a terminal state, returns the pipeline object
+    with an extra timed_out=true field.
+
+    Args:
+        project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
+        pipeline_id: Numeric ID of the pipeline to wait for.
+        poll_interval: Seconds between status checks (default 10).
+        timeout: Maximum seconds to wait before returning with timed_out=true (default 600).
+
+    Returns:
+        JSON pipeline object. Check the 'status' field for the outcome, and
+        'timed_out' (if present and true) to detect a timeout.
+    """
+    try:
+        result = await _get_client(ctx).await_pipeline(
+            project_id, pipeline_id, poll_interval, timeout
+        )
+        return json.dumps(result, indent=2)
+    except GitLabError as e:
+        return _fmt_error(e)
+
+
+@mcp.tool()
+async def get_failed_job_logs(
+    project_id: str,
+    pipeline_id: int,
+    max_chars: int = 50000,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Get the logs for every failed job in a pipeline in a single call.
+
+    Combines list_pipeline_jobs and get_job_log: fetches all jobs, filters to
+    the ones with status 'failed', and returns their log tails keyed by job name.
+
+    Args:
+        project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
+        pipeline_id: Numeric ID of the pipeline.
+        max_chars: Maximum characters to return per log, from the end (default 50000).
+
+    Returns:
+        JSON object mapping job name to log text. Empty object if no jobs failed.
+    """
+    try:
+        result = await _get_client(ctx).get_failed_job_logs(
+            project_id, pipeline_id, max_chars
+        )
+        return json.dumps(result, indent=2)
+    except GitLabError as e:
+        return _fmt_error(e)
+
+
 def main() -> None:
     mcp.run(transport="stdio")
 

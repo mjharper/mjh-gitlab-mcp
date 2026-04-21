@@ -537,6 +537,103 @@ async def test_get_job_log_default_max_chars(client):
     assert result == "ok"
 
 
+# ---------------------------------------------------------------------------
+# Compound: await_pipeline
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_await_pipeline_already_terminal(client):
+    respx.get(_url("/projects/1/pipelines/42")).mock(
+        return_value=httpx.Response(200, json={"id": 42, "status": "success"})
+    )
+    result = await client.await_pipeline("1", 42, poll_interval=0, timeout=60)
+    assert result["status"] == "success"
+    assert "timed_out" not in result
+
+
+@respx.mock
+async def test_await_pipeline_polls_until_terminal(client):
+    responses = iter([
+        httpx.Response(200, json={"id": 42, "status": "running"}),
+        httpx.Response(200, json={"id": 42, "status": "running"}),
+        httpx.Response(200, json={"id": 42, "status": "failed"}),
+    ])
+    respx.get(_url("/projects/1/pipelines/42")).mock(side_effect=lambda _req: next(responses))
+    result = await client.await_pipeline("1", 42, poll_interval=0, timeout=60)
+    assert result["status"] == "failed"
+    assert "timed_out" not in result
+
+
+@respx.mock
+async def test_await_pipeline_timeout_returns_timed_out_flag(client):
+    respx.get(_url("/projects/1/pipelines/42")).mock(
+        return_value=httpx.Response(200, json={"id": 42, "status": "running"})
+    )
+    result = await client.await_pipeline("1", 42, poll_interval=0, timeout=0)
+    assert result["timed_out"] is True
+    assert result["status"] == "running"
+
+
+@respx.mock
+async def test_await_pipeline_all_terminal_statuses(client):
+    for status in ("success", "failed", "canceled", "skipped"):
+        respx.get(_url("/projects/1/pipelines/1")).mock(
+            return_value=httpx.Response(200, json={"id": 1, "status": status})
+        )
+        result = await client.await_pipeline("1", 1, poll_interval=0, timeout=60)
+        assert result["status"] == status
+
+
+# ---------------------------------------------------------------------------
+# Compound: get_failed_job_logs
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_failed_job_logs_no_failures(client):
+    respx.get(_url("/projects/1/pipelines/42/jobs")).mock(
+        return_value=httpx.Response(200, json=[
+            {"id": 10, "name": "build", "status": "success"},
+            {"id": 11, "name": "test", "status": "skipped"},
+        ])
+    )
+    result = await client.get_failed_job_logs("1", 42)
+    assert result == {}
+
+
+@respx.mock
+async def test_get_failed_job_logs_one_failure(client):
+    respx.get(_url("/projects/1/pipelines/42/jobs")).mock(
+        return_value=httpx.Response(200, json=[
+            {"id": 10, "name": "build", "status": "failed"},
+            {"id": 11, "name": "test", "status": "success"},
+        ])
+    )
+    respx.get(_url("/projects/1/jobs/10/trace")).mock(
+        return_value=httpx.Response(200, text="error: compilation failed")
+    )
+    result = await client.get_failed_job_logs("1", 42)
+    assert result == {"build": "error: compilation failed"}
+
+
+@respx.mock
+async def test_get_failed_job_logs_multiple_failures(client):
+    respx.get(_url("/projects/1/pipelines/42/jobs")).mock(
+        return_value=httpx.Response(200, json=[
+            {"id": 10, "name": "build", "status": "failed"},
+            {"id": 11, "name": "lint", "status": "failed"},
+            {"id": 12, "name": "deploy", "status": "success"},
+        ])
+    )
+    respx.get(_url("/projects/1/jobs/10/trace")).mock(
+        return_value=httpx.Response(200, text="build error")
+    )
+    respx.get(_url("/projects/1/jobs/11/trace")).mock(
+        return_value=httpx.Response(200, text="lint error")
+    )
+    result = await client.get_failed_job_logs("1", 42)
+    assert result == {"build": "build error", "lint": "lint error"}
+
+
 @respx.mock
 async def test_get_latest_release_follows_pagination(client):
     releases_url = _url("/projects/1/releases")

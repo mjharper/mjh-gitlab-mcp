@@ -27,9 +27,21 @@ class DbtClient:
             headers={"Authorization": f"Token {token}"},
             timeout=30.0,
         )
+        v2_base_url = os.environ.get("DBT_CLOUD_ADMIN_V2_URL", "https://cloud.getdbt.com/api/v2").rstrip("/")
+        self._v2_client = httpx.AsyncClient(
+            base_url=v2_base_url,
+            headers={"Authorization": f"Token {token}"},
+            timeout=30.0,
+        )
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._client.request(method, path, **kwargs)
+        if not response.is_success:
+            raise DbtError(response.status_code, response.text)
+        return response.json()
+
+    async def _v2_request(self, method: str, path: str, **kwargs: Any) -> Any:
+        response = await self._v2_client.request(method, path, **kwargs)
         if not response.is_success:
             raise DbtError(response.status_code, response.text)
         return response.json()
@@ -61,5 +73,32 @@ class DbtClient:
         env_vars = data.get("data", [])
         return [ev["name"] for ev in env_vars if "name" in ev]
 
+    async def list_jobs(self, project_id: str | None = None) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {}
+        if project_id:
+            params["project_id"] = project_id
+        data = await self._v2_request("GET", f"/accounts/{self._account_id}/jobs/", params=params)
+        return data.get("data", [])
+
+    async def get_latest_failed_run(self, job_id: str) -> dict[str, Any] | None:
+        # status=20 is "Error" in dbt Cloud run status codes
+        data = await self._v2_request("GET", f"/accounts/{self._account_id}/runs/", params={
+            "job_definition_id": job_id,
+            "status": 20,
+            "order_by": "-created_at",
+            "limit": 1,
+        })
+        runs = data.get("data", [])
+        return runs[0] if runs else None
+
+    async def get_run_with_steps(self, run_id: str) -> dict[str, Any]:
+        data = await self._v2_request(
+            "GET",
+            f"/accounts/{self._account_id}/runs/{run_id}/",
+            params={"include_related[]": "run_steps"},
+        )
+        return data.get("data", {})
+
     async def aclose(self) -> None:
         await self._client.aclose()
+        await self._v2_client.aclose()

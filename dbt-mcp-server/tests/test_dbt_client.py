@@ -7,6 +7,7 @@ import respx
 from dbt_mcp_server.dbt_client import DbtClient, DbtError
 
 BASE_URL = "https://cloud.getdbt.com/api/v3"
+V2_BASE_URL = "https://cloud.getdbt.com/api/v2"
 ACCOUNT_ID = "123"
 
 
@@ -15,6 +16,7 @@ def dbt_env(monkeypatch):
     monkeypatch.setenv("DBT_CLOUD_API_TOKEN", "test-token")
     monkeypatch.setenv("DBT_CLOUD_ACCOUNT_ID", ACCOUNT_ID)
     monkeypatch.setenv("DBT_CLOUD_BASE_URL", BASE_URL)
+    monkeypatch.setenv("DBT_CLOUD_ADMIN_V2_URL", V2_BASE_URL)
 
 
 @pytest.fixture
@@ -24,6 +26,10 @@ def client():
 
 def _url(path: str) -> str:
     return BASE_URL + path
+
+
+def _v2_url(path: str) -> str:
+    return V2_BASE_URL + path
 
 
 # ---------------------------------------------------------------------------
@@ -232,3 +238,95 @@ async def test_default_base_url_when_not_set(monkeypatch):
     )
     await client.find_project_by_name("anything")
     assert route.called
+
+
+# ---------------------------------------------------------------------------
+# list_jobs
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_list_jobs_no_filter(client):
+    route = respx.get(_v2_url(f"/accounts/{ACCOUNT_ID}/jobs/")).mock(
+        return_value=httpx.Response(200, json={"data": [
+            {"id": 1, "name": "Analytics Hourly", "project_id": 10, "environment_id": 20, "created_at": "2024-01-01"},
+        ]})
+    )
+    result = await client.list_jobs()
+    assert route.called
+    assert len(result) == 1
+    assert result[0]["id"] == 1
+    assert result[0]["name"] == "Analytics Hourly"
+
+
+@respx.mock
+async def test_list_jobs_with_project_id(client):
+    route = respx.get(_v2_url(f"/accounts/{ACCOUNT_ID}/jobs/")).mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    await client.list_jobs(project_id="42")
+    assert route.calls[0].request.url.params["project_id"] == "42"
+
+
+# ---------------------------------------------------------------------------
+# get_latest_failed_run
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_latest_failed_run_found(client):
+    run = {"id": 999, "job_definition_id": 5, "status": 20, "created_at": "2024-06-01T00:00:00Z"}
+    route = respx.get(_v2_url(f"/accounts/{ACCOUNT_ID}/runs/")).mock(
+        return_value=httpx.Response(200, json={"data": [run]})
+    )
+    result = await client.get_latest_failed_run("5")
+    params = route.calls[0].request.url.params
+    assert params["status"] == "20"
+    assert params["order_by"] == "-created_at"
+    assert params["limit"] == "1"
+    assert result == run
+
+
+@respx.mock
+async def test_get_latest_failed_run_not_found(client):
+    respx.get(_v2_url(f"/accounts/{ACCOUNT_ID}/runs/")).mock(
+        return_value=httpx.Response(200, json={"data": []})
+    )
+    result = await client.get_latest_failed_run("5")
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
+# get_run_with_steps
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_run_with_steps(client):
+    run_data = {
+        "id": 999,
+        "status_humanized": "Error",
+        "created_at": "2024-06-01T00:00:00Z",
+        "finished_at": "2024-06-01T00:05:00Z",
+        "run_steps": [
+            {"name": "dbt run", "status_humanized": "Error", "logs": "Compilation Error in model orders"},
+        ],
+    }
+    route = respx.get(_v2_url(f"/accounts/{ACCOUNT_ID}/runs/999/")).mock(
+        return_value=httpx.Response(200, json={"data": run_data})
+    )
+    result = await client.get_run_with_steps("999")
+    assert route.calls[0].request.url.params["include_related[]"] == "run_steps"
+    assert result["id"] == 999
+    assert len(result["run_steps"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# v2 error handling
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_v2_error_raises_dbt_error(client):
+    respx.get(_v2_url(f"/accounts/{ACCOUNT_ID}/jobs/")).mock(
+        return_value=httpx.Response(403, json={"status": {"user_message": "Forbidden"}})
+    )
+    with pytest.raises(DbtError) as exc_info:
+        await client.list_jobs()
+    assert exc_info.value.status_code == 403

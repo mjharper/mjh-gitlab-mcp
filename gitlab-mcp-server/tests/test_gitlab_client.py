@@ -762,6 +762,14 @@ def test_annotate_large_diffs_no_mutation_when_not_too_large():
     diffs = [{"new_path": "a.py", "diff": "some diff", "too_large": False}]
     result = _annotate_large_diffs(diffs)
     assert result[0]["diff"] == "some diff"
+    assert result[0]["too_large"] is False
+
+
+def test_annotate_large_diffs_defaults_too_large_to_false():
+    from gitlab_mcp_server.server import _annotate_large_diffs
+    diffs = [{"new_path": "a.py", "diff": "some diff"}]  # too_large absent from API
+    result = _annotate_large_diffs(diffs)
+    assert result[0]["too_large"] is False
 
 
 # ---------------------------------------------------------------------------

@@ -59,7 +59,9 @@ def _shape_mr(mr: dict[str, Any]) -> dict[str, Any]:
 
 def _annotate_large_diffs(diffs: list[Any]) -> list[Any]:
     for diff in diffs:
-        if diff.get("too_large"):
+        too_large = diff.get("too_large", False)
+        diff["too_large"] = too_large
+        if too_large:
             diff["diff"] = (
                 f"[diff unavailable — {diff.get('new_path', 'file')} is too large;"
                 " use get_file_contents to read it]"

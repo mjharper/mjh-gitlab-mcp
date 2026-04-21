@@ -288,5 +288,11 @@ class GitLabClient:
             params={"state": state, "per_page": per_page},
         )
 
+    async def get_mr_discussions(self, project_id: str, mr_iid: int) -> list[Any]:
+        return await self._get_all_pages(
+            f"/projects/{project_id}/merge_requests/{mr_iid}/discussions",
+            params={},
+        )
+
     async def aclose(self) -> None:
         await self._client.aclose()

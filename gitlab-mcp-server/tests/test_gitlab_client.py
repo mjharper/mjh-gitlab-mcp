@@ -694,3 +694,130 @@ async def test_list_merge_requests_404_raises(client):
     with pytest.raises(GitLabError) as exc_info:
         await client.list_merge_requests("1")
     assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# get_mr_discussions
+# ---------------------------------------------------------------------------
+
+@respx.mock
+async def test_get_mr_discussions_url_and_result(client):
+    discussions = [{"id": "abc", "notes": [{"body": "LGTM", "author": {"name": "Alice"}}]}]
+    route = respx.get(_url("/projects/1/merge_requests/5/discussions")).mock(
+        return_value=httpx.Response(200, json=discussions)
+    )
+    result = await client.get_mr_discussions("1", 5)
+    assert route.calls[0].request.url.params["per_page"] == "100"
+    assert len(result) == 1
+    assert result[0]["id"] == "abc"
+
+
+@respx.mock
+async def test_get_mr_discussions_follows_pagination(client):
+    discussions_url = _url("/projects/1/merge_requests/5/discussions")
+    page2_url = discussions_url + "?page=2&per_page=100"
+
+    d1 = {"id": "aaa", "notes": [{"body": "First comment"}]}
+    d2 = {"id": "bbb", "notes": [{"body": "Second comment"}]}
+
+    pages = iter([
+        httpx.Response(200, json=[d1], headers={"link": f'<{page2_url}>; rel="next"'}),
+        httpx.Response(200, json=[d2]),
+    ])
+    respx.get(discussions_url).mock(side_effect=lambda _req: next(pages))
+    result = await client.get_mr_discussions("1", 5)
+    assert len(result) == 2
+    assert result[0]["id"] == "aaa"
+    assert result[1]["id"] == "bbb"
+
+
+@respx.mock
+async def test_get_mr_discussions_404_raises(client):
+    respx.get(_url("/projects/1/merge_requests/5/discussions")).mock(
+        return_value=httpx.Response(404, json={"message": "Not found"})
+    )
+    with pytest.raises(GitLabError) as exc_info:
+        await client.get_mr_discussions("1", 5)
+    assert exc_info.value.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _annotate_large_diffs (pure function — no HTTP)
+# ---------------------------------------------------------------------------
+
+def test_annotate_large_diffs_replaces_too_large_diff():
+    from gitlab_mcp_server.server import _annotate_large_diffs
+    diffs = [
+        {"new_path": "big.py", "diff": "", "too_large": True},
+        {"new_path": "small.py", "diff": "@@ -1 +1 @@\n-old\n+new", "too_large": False},
+    ]
+    result = _annotate_large_diffs(diffs)
+    assert "get_file_contents" in result[0]["diff"]
+    assert "big.py" in result[0]["diff"]
+    assert result[1]["diff"] == "@@ -1 +1 @@\n-old\n+new"
+
+
+def test_annotate_large_diffs_no_mutation_when_not_too_large():
+    from gitlab_mcp_server.server import _annotate_large_diffs
+    diffs = [{"new_path": "a.py", "diff": "some diff", "too_large": False}]
+    result = _annotate_large_diffs(diffs)
+    assert result[0]["diff"] == "some diff"
+
+
+# ---------------------------------------------------------------------------
+# _shape_mr (pure function — no HTTP)
+# ---------------------------------------------------------------------------
+
+def test_shape_mr_filters_to_review_fields():
+    from gitlab_mcp_server.server import _shape_mr
+    mr = {
+        "iid": 5,
+        "title": "Fix bug",
+        "description": "Fixes #123",
+        "state": "opened",
+        "author": {"name": "Alice", "username": "alice", "id": 999, "avatar_url": "http://..."},
+        "assignees": [{"name": "Bob", "username": "bob", "id": 888, "avatar_url": "http://..."}],
+        "reviewers": [],
+        "source_branch": "fix/bug",
+        "target_branch": "main",
+        "labels": ["bug"],
+        "web_url": "https://gitlab.example.com/project/-/merge_requests/5",
+        "created_at": "2024-01-01T00:00:00Z",
+        "updated_at": "2024-01-02T00:00:00Z",
+        "diff_refs": {"base_sha": "abc", "head_sha": "def", "start_sha": "ghi"},
+        "merge_status": "can_be_merged",
+        "blocking_discussions_resolved": True,
+        "changes_count": "3",
+        "head_pipeline": {"id": 42, "status": "success", "web_url": "http://pipeline"},
+        # Noise fields that should be stripped
+        "merge_commit_sha": "xyz",
+        "squash": False,
+        "force_remove_source_branch": None,
+        "user": {"can_merge": True},
+    }
+    result = _shape_mr(mr)
+    assert result["iid"] == 5
+    assert result["title"] == "Fix bug"
+    assert result["source_branch"] == "fix/bug"
+    assert "merge_commit_sha" not in result
+    assert "squash" not in result
+    assert "user" not in result
+    assert result["author"] == {"name": "Alice", "username": "alice"}
+    assert "id" not in result["author"]
+    assert result["assignees"] == [{"name": "Bob", "username": "bob"}]
+    assert result["head_pipeline"] == {"status": "success", "web_url": "http://pipeline"}
+
+
+def test_shape_mr_handles_null_head_pipeline():
+    from gitlab_mcp_server.server import _shape_mr
+    mr = {
+        "iid": 1, "title": "T", "description": None, "state": "opened",
+        "author": {"name": "A", "username": "a"},
+        "assignees": [], "reviewers": [], "source_branch": "feat", "target_branch": "main",
+        "labels": [], "web_url": "http://...", "created_at": "", "updated_at": "",
+        "diff_refs": None, "merge_status": "can_be_merged",
+        "blocking_discussions_resolved": True, "changes_count": "1",
+        "head_pipeline": None,
+    }
+    result = _shape_mr(mr)
+    assert result["head_pipeline"] is None

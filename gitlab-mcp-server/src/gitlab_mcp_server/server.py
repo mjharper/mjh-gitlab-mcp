@@ -1,3 +1,4 @@
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -25,6 +26,45 @@ def _get_client(ctx: Context) -> GitLabClient:
 
 def _fmt_error(e: GitLabError) -> str:
     return str(e)
+
+
+_MR_REVIEW_FIELDS = frozenset({
+    "iid", "title", "description", "state", "author", "assignees", "reviewers",
+    "source_branch", "target_branch", "labels", "web_url", "created_at",
+    "updated_at", "diff_refs", "merge_status", "blocking_discussions_resolved",
+    "changes_count", "head_pipeline",
+})
+
+
+def _shape_mr(mr: dict[str, Any]) -> dict[str, Any]:
+    shaped = {k: v for k, v in mr.items() if k in _MR_REVIEW_FIELDS}
+    if isinstance(shaped.get("author"), dict):
+        shaped["author"] = {
+            "name": shaped["author"].get("name"),
+            "username": shaped["author"].get("username"),
+        }
+    for key in ("assignees", "reviewers"):
+        if isinstance(shaped.get(key), list):
+            shaped[key] = [
+                {"name": u.get("name"), "username": u.get("username")}
+                for u in shaped[key]
+            ]
+    if isinstance(shaped.get("head_pipeline"), dict):
+        shaped["head_pipeline"] = {
+            "status": shaped["head_pipeline"].get("status"),
+            "web_url": shaped["head_pipeline"].get("web_url"),
+        }
+    return shaped
+
+
+def _annotate_large_diffs(diffs: list[Any]) -> list[Any]:
+    for diff in diffs:
+        if diff.get("too_large"):
+            diff["diff"] = (
+                f"[diff unavailable — {diff.get('new_path', 'file')} is too large;"
+                " use get_file_contents to read it]"
+            )
+    return diffs
 
 
 @mcp.tool()
@@ -427,7 +467,7 @@ async def get_merge_request_diffs(
     """
     try:
         result = await _get_client(ctx).get_merge_request_diffs(project_id, mr_iid)
-        return json.dumps(result, indent=2)
+        return json.dumps(_annotate_large_diffs(result), indent=2)
     except GitLabError as e:
         return _fmt_error(e)
 
@@ -457,6 +497,70 @@ async def list_merge_requests(
         result = await _get_client(ctx).list_merge_requests(
             project_id, state=state, per_page=per_page
         )
+        return json.dumps(result, indent=2)
+    except GitLabError as e:
+        return _fmt_error(e)
+
+
+@mcp.tool()
+async def get_mr_for_review(
+    project_id: str,
+    mr_iid: int,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Get everything needed to review a merge request in a single call.
+
+    Fetches MR metadata and all file diffs in parallel, returning a combined
+    object. The metadata is filtered to fields relevant for review (title,
+    description, author, branches, labels, pipeline status, etc.) — noise fields
+    from the raw API are omitted to reduce context. Files where GitLab's differ
+    hit its size limit include an inline note to use get_file_contents instead.
+
+    For existing review conversations, also call get_mr_discussions.
+
+    Args:
+        project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
+        mr_iid: The internal MR ID (iid) shown in the GitLab UI and URL, e.g. 42.
+
+    Returns:
+        JSON object with 'mr' (shaped metadata) and 'diffs' (array of diff objects).
+    """
+    try:
+        client = _get_client(ctx)
+        mr, diffs = await asyncio.gather(
+            client.get_merge_request(project_id, mr_iid),
+            client.get_merge_request_diffs(project_id, mr_iid),
+        )
+        return json.dumps(
+            {"mr": _shape_mr(mr), "diffs": _annotate_large_diffs(diffs)},
+            indent=2,
+        )
+    except GitLabError as e:
+        return _fmt_error(e)
+
+
+@mcp.tool()
+async def get_mr_discussions(
+    project_id: str,
+    mr_iid: int,
+    ctx: Context = None,  # type: ignore[assignment]
+) -> str:
+    """Get all review discussions and comments on a merge request.
+
+    Returns threaded discussions including inline code comments (with file path
+    and line number) and general MR comments. Use this alongside get_mr_for_review
+    to understand what feedback has already been given before adding your own review.
+
+    Args:
+        project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
+        mr_iid: The internal MR ID (iid) shown in the GitLab UI and URL, e.g. 42.
+
+    Returns:
+        JSON array of discussion objects, each with a notes array containing
+        author, body, position (for inline comments), and resolved status.
+    """
+    try:
+        result = await _get_client(ctx).get_mr_discussions(project_id, mr_iid)
         return json.dumps(result, indent=2)
     except GitLabError as e:
         return _fmt_error(e)

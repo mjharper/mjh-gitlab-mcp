@@ -427,9 +427,10 @@ async def get_merge_request(
 ) -> str:
     """Get full details of a single merge request.
 
-    Use this as the first step when reviewing an MR — it returns the title,
-    description, state, author, assignees, labels, source and target branches,
-    diff statistics, pipeline status, and web URL.
+    Returns the full unfiltered MR metadata object — useful for non-review
+    workflows such as checking merge status, retrieving the merge commit SHA,
+    or inspecting squash/rebase settings. For code review use get_mr_for_review,
+    which combines shaped metadata with file diffs in a single call.
 
     Args:
         project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
@@ -446,35 +447,6 @@ async def get_merge_request(
 
 
 @mcp.tool()
-async def get_merge_request_diffs(
-    project_id: str,
-    mr_iid: int,
-    ctx: Context = None,  # type: ignore[assignment]
-) -> str:
-    """Get the unified diffs for all files changed in a merge request.
-
-    Returns all diff objects across all pages. Each object contains old_path,
-    new_path, diff (unified diff text), new_file, deleted_file, and renamed_file.
-
-    This is the primary tool for code review. After reading the diffs, use
-    get_file_contents with ref=source_branch to load the full content of any
-    file that needs deeper context beyond the diff hunks.
-
-    Args:
-        project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').
-        mr_iid: The internal MR ID (iid) shown in the GitLab UI and URL, e.g. 42.
-
-    Returns:
-        JSON array of diff objects, one per changed file.
-    """
-    try:
-        result = await _get_client(ctx).get_merge_request_diffs(project_id, mr_iid)
-        return json.dumps(_annotate_large_diffs(result), indent=2)
-    except GitLabError as e:
-        return _fmt_error(e)
-
-
-@mcp.tool()
 async def list_merge_requests(
     project_id: str,
     state: str = "opened",
@@ -484,7 +456,7 @@ async def list_merge_requests(
     """List merge requests for a project.
 
     Use this for discovery when you don't already know the MR iid. Once you
-    have the iid, call get_merge_request and get_merge_request_diffs to review.
+    have the iid, call get_mr_for_review to review.
 
     Args:
         project_id: Numeric project ID or URL-encoded path (e.g. 'group%2Fproject').

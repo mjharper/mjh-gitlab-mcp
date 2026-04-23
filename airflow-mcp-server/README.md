@@ -15,38 +15,41 @@ A lightweight [Model Context Protocol](https://modelcontextprotocol.io/) (MCP) s
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/) for dependency management
+- [gcloud CLI](https://cloud.google.com/sdk/gcloud) authenticated with an account that has access to your Airflow instance
+
+## Authentication
+
+The server uses `gcloud auth print-access-token` to obtain a Bearer token at startup. This is the correct approach for Cloud Composer environments where IAP (Identity-Aware Proxy) is enabled — IAP rejects basic auth and redirects unauthenticated requests to Google login.
+
+Make sure you are authenticated before starting the server:
+
+```bash
+gcloud auth login
+# or for workload identity / CI environments:
+gcloud auth application-default login
+```
+
+The token is fetched once at startup and lasts approximately one hour. Restart the server if it expires during a long session.
 
 ## Installation
 
 ```bash
-# Install from the project directory
 cd airflow-mcp-server
 uv pip install -e .
 ```
 
-Or install directly without cloning using `uvx`:
-
-```bash
-uvx --from . airflow-mcp-server
-```
-
 ## Configuration
 
-The server reads three environment variables at startup:
+The server reads one environment variable at startup:
 
 | Variable | Description |
 |---|---|
-| `AIRFLOW_API_URL` | Base URL of the Airflow REST API, e.g. `https://airflow.example.com/api/v1` |
-| `AIRFLOW_USERNAME` | Airflow username |
-| `AIRFLOW_PASSWORD` | Airflow password |
+| `AIRFLOW_API_URL` | Base URL of the Airflow REST API, e.g. `https://airflow.example.com/api/v2` |
 
 ## Running
 
 ```bash
-AIRFLOW_API_URL=https://airflow.example.com/api/v1 \
-AIRFLOW_USERNAME=admin \
-AIRFLOW_PASSWORD=secret \
-airflow-mcp-server
+AIRFLOW_API_URL=https://airflow.example.com/api/v2 airflow-mcp-server
 ```
 
 The server communicates over **stdio** only.
@@ -68,26 +71,9 @@ The server communicates over **stdio** only.
         "airflow-mcp-server"
       ],
       "env": {
-        "AIRFLOW_API_URL": "https://airflow.example.com/api/v1",
-        "AIRFLOW_USERNAME": "${input:airflowUsername}",
-        "AIRFLOW_PASSWORD": "${input:airflowPassword}"
+        "AIRFLOW_API_URL": "https://airflow.example.com/api/v2"
       }
     }
-  },
-  "inputs": [
-    {
-      "id": "airflowUsername",
-      "type": "promptString",
-      "description": "Airflow username"
-    },
-    {
-      "id": "airflowPassword",
-      "type": "promptString",
-      "description": "Airflow password",
-      "password": true
-    }
-  ]
+  }
 }
 ```
-
-The `${input:...}` placeholders cause VS Code to prompt for credentials once per session so they are never stored on disk.

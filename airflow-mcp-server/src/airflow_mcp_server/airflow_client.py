@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any
 
@@ -10,33 +11,32 @@ class AirflowError(Exception):
         super().__init__(f"Airflow API error {status_code}: {message}")
 
 
+async def _get_gcloud_token() -> str:
+    proc = await asyncio.create_subprocess_exec(
+        "gcloud", "auth", "print-access-token",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        raise RuntimeError(f"gcloud auth print-access-token failed: {stderr.decode().strip()}")
+    return stdout.decode().strip()
+
+
 class AirflowClient:
     def __init__(self) -> None:
         base_url = os.environ.get("AIRFLOW_API_URL", "").rstrip("/")
-        self._username = os.environ.get("AIRFLOW_USERNAME", "")
-        self._password = os.environ.get("AIRFLOW_PASSWORD", "")
-
         if not base_url:
             raise RuntimeError("AIRFLOW_API_URL environment variable is not set")
-        if not self._username:
-            raise RuntimeError("AIRFLOW_USERNAME environment variable is not set")
-        if not self._password:
-            raise RuntimeError("AIRFLOW_PASSWORD environment variable is not set")
 
         self._client = httpx.AsyncClient(
             base_url=base_url,
             timeout=30.0,
+            follow_redirects=True,
         )
 
     async def authenticate(self) -> None:
-        """Obtain a JWT from /auth/token and store it as a Bearer header."""
-        response = await self._client.post(
-            "/auth/token",
-            json={"username": self._username, "password": self._password},
-        )
-        if not response.is_success:
-            raise AirflowError(response.status_code, response.text)
-        token = response.json()["access_token"]
+        token = await _get_gcloud_token()
         self._client.headers["Authorization"] = f"Bearer {token}"
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:

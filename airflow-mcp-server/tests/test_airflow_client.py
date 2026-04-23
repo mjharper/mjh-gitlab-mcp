@@ -1,4 +1,5 @@
 import os
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -12,15 +13,13 @@ BASE_URL = "http://airflow.example.com/api/v2"
 @pytest.fixture(autouse=True)
 def airflow_env(monkeypatch):
     monkeypatch.setenv("AIRFLOW_API_URL", BASE_URL)
-    monkeypatch.setenv("AIRFLOW_USERNAME", "admin")
-    monkeypatch.setenv("AIRFLOW_PASSWORD", "secret")
 
 
 @pytest.fixture
 def client():
     c = AirflowClient()
-    # Pre-seed the Bearer token so individual tests don't need to mock /auth/token.
-    c._client.headers["Authorization"] = "Bearer test-jwt-token"
+    # Pre-seed the Bearer token so individual tests don't need to mock gcloud.
+    c._client.headers["Authorization"] = "Bearer test-token"
     return c
 
 
@@ -32,32 +31,23 @@ def _url(path: str) -> str:
 # authenticate()
 # ---------------------------------------------------------------------------
 
-@respx.mock
-async def test_authenticate_posts_credentials_and_stores_token():
-    route = respx.post(_url("/auth/token")).mock(
-        return_value=httpx.Response(200, json={"access_token": "my-jwt", "token_type": "bearer"})
-    )
-    c = AirflowClient()
-    await c.authenticate()
-    await c.aclose()
-
-    body = route.calls[0].request.read()
-    import json
-    payload = json.loads(body)
-    assert payload == {"username": "admin", "password": "secret"}
-    assert c._client.headers["Authorization"] == "Bearer my-jwt"
-
-
-@respx.mock
-async def test_authenticate_raises_on_401():
-    respx.post(_url("/auth/token")).mock(
-        return_value=httpx.Response(401, json={"detail": "Unauthorized"})
-    )
-    c = AirflowClient()
-    with pytest.raises(AirflowError) as exc_info:
+async def test_authenticate_uses_gcloud_token():
+    with patch("airflow_mcp_server.airflow_client._get_gcloud_token", return_value="gcloud-token"):
+        c = AirflowClient()
         await c.authenticate()
-    await c.aclose()
-    assert exc_info.value.status_code == 401
+        await c.aclose()
+    assert c._client.headers["Authorization"] == "Bearer gcloud-token"
+
+
+async def test_authenticate_raises_when_gcloud_fails():
+    with patch(
+        "airflow_mcp_server.airflow_client._get_gcloud_token",
+        side_effect=RuntimeError("gcloud auth print-access-token failed: ERROR"),
+    ):
+        c = AirflowClient()
+        with pytest.raises(RuntimeError, match="gcloud auth print-access-token failed"):
+            await c.authenticate()
+        await c.aclose()
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +60,7 @@ async def test_bearer_token_header_sent(client):
         return_value=httpx.Response(200, json={"dags": [], "total_entries": 0})
     )
     await client.list_dags()
-    assert route.calls[0].request.headers["authorization"] == "Bearer test-jwt-token"
+    assert route.calls[0].request.headers["authorization"] == "Bearer test-token"
 
 
 # ---------------------------------------------------------------------------
@@ -306,16 +296,4 @@ async def test_get_task_logs_raises_on_error(client):
 def test_missing_api_url_raises(monkeypatch):
     monkeypatch.delenv("AIRFLOW_API_URL", raising=False)
     with pytest.raises(RuntimeError, match="AIRFLOW_API_URL"):
-        AirflowClient()
-
-
-def test_missing_username_raises(monkeypatch):
-    monkeypatch.delenv("AIRFLOW_USERNAME", raising=False)
-    with pytest.raises(RuntimeError, match="AIRFLOW_USERNAME"):
-        AirflowClient()
-
-
-def test_missing_password_raises(monkeypatch):
-    monkeypatch.delenv("AIRFLOW_PASSWORD", raising=False)
-    with pytest.raises(RuntimeError, match="AIRFLOW_PASSWORD"):
         AirflowClient()
